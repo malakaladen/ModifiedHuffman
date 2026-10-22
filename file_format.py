@@ -15,7 +15,7 @@ The frequencies let the decoder rebuild the same Huffman tree as the encoder.
 import os
 import struct
 
-from bitwriter import BitWriter, BitReader
+from bit_writer import BitWriter, BitReader
 
 ESC = 256   # same value as Member A's compression.py (kept here to avoid circular imports)
 
