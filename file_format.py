@@ -16,29 +16,14 @@ import os
 import struct
 
 from bit_writer import BitWriter, BitReader
-
-ESC = 256   # same value as Member A's compression.py (kept here to avoid circular imports)
-
-__all__ = [
-    "write_compressed_file", "read_compressed_file", "verify_file_size",
-    "build_huffman_frequencies", "header_size", "ESC",
-]
-
-
-def __getattr__(name):
-    """Lazy re-export so 'from file_format import build_huffman_tree' still works."""
-    if name in ("build_huffman_tree", "generate_codes"):
-        import compression
-        return getattr(compression, name)
-    raise AttributeError(f"module 'file_format' has no attribute {name!r}")
-
+from compression import ESC, huffman_frequencies
 
 MAGIC = b"MHUF"
 VERSION = 1
 FIXED_HEADER = struct.Struct(">4sBIBBH")
-ENTRY = struct.Struct(">BI")
+ENTRY = struct.Struct(">BL")
 ESC_ENTRY = struct.Struct(">I")
-
+MAX_UNIT32 = 2 ** 32-1
 
 def header_size(num_kept, has_esc):
     return FIXED_HEADER.size + ENTRY.size * num_kept + (ESC_ENTRY.size if has_esc else 0)
@@ -46,17 +31,14 @@ def header_size(num_kept, has_esc):
 
 def build_huffman_frequencies(metadata):
     '''Kept symbol frequencies plus the combined ESC frequency.'''
-    freq = metadata["frequencies"]
-    huffman_frequencies = {symbol: freq[symbol] for symbol in metadata["kept"]}
-
-    if metadata["rare"]:
-        huffman_frequencies[ESC] = sum(freq[symbol] for symbol in metadata["rare"])
-
-    return huffman_frequencies
+    return huffman_frequencies(metadata["frequencies"], metadata["kept"], metadata["rare"])
 
 
 def write_compressed_file(file_path, bit_string, metadata):
     '''Pack bit_string into bytes and save header + payload. Returns file size.'''
+    if metadata["original_length"] > MAX_UNIT32:
+        raise ValueError("input is too large forthis file format (max 4 GiB)")
+    
     writer = BitWriter()
     writer.write_bits(bit_string)
     payload, padding_bits = writer.finish()
@@ -67,7 +49,7 @@ def write_compressed_file(file_path, bit_string, metadata):
 
     with open(file_path, "wb") as f:
         f.write(FIXED_HEADER.pack(MAGIC, VERSION, metadata["original_length"],
-                                  padding_bits, int(has_esc), len(kept_table)))
+                                padding_bits, int(has_esc), len(kept_table)))
         for symbol in sorted(kept_table):
             f.write(ENTRY.pack(symbol, kept_table[symbol]))
         if has_esc:
@@ -92,18 +74,29 @@ def read_compressed_file(file_path):
         raise ValueError("bad magic number: not a compressed file from this program.")
     if version != VERSION:
         raise ValueError(f"unsupported version {version}.")
+    if has_esc not in (0,1):
+        raise ValueError("corrupted file: bad ESC flag")
     if len(data) < header_size(num_kept, has_esc):
         raise ValueError("file is truncated inside the header.")
 
     position = FIXED_HEADER.size
     huffman_frequencies = {}
+    previous = -1
     for _ in range(num_kept):
         symbol, frequency = ENTRY.unpack_from(data, position)
+        if symbol <= previous :
+            raise ValueError("corrupted file: symbol table is not strictly ascending.")
+        if frequency == 0:
+            raise ValueError("corrupted file : symbol with zero frequency")
         huffman_frequencies[symbol] = frequency
+        previous = symbol
         position += ENTRY.size
 
     if has_esc:
-        huffman_frequencies[ESC] = ESC_ENTRY.unpack_from(data, position)[0]
+        frequency = ESC_ENTRY.unpack_from(data,position)[0]
+        if frequency ==0:
+            raise ValueError("corrupted file: ESC with zero frequency")
+        huffman_frequencies[ESC] = frequency
         position += ESC_ENTRY.size
 
     header = {
