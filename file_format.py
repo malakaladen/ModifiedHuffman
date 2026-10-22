@@ -16,7 +16,18 @@ import os
 import struct
 
 from bitwriter import BitWriter, BitReader
-from compression import ESC
+
+try:
+    # Member A's names, re-exported so "from file_format import ..." also works
+    from compression import ESC, build_huffman_tree, generate_codes
+except ImportError:
+    ESC = 256   # same value Member A uses
+
+__all__ = [
+    "write_compressed_file", "read_compressed_file", "verify_file_size",
+    "build_huffman_frequencies", "header_size", "ESC",
+    "build_huffman_tree", "generate_codes",
+]
 
 MAGIC = b"MHUF"
 VERSION = 1
