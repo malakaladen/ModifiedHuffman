@@ -26,8 +26,27 @@ class BitWriter:
 
     def write_bits(self, bit_string):
         '''Write a bit string such as "01101".'''
-        for bit in bit_string:
-            self.write_bit(bit)
+        if bit_string.strip("01"):
+            raise ValueError("bit string may only contain 0s and 1s.")
+
+        #finish the current byte if we have a partial byte and the new bits will fill it.
+        index = 0
+        while self.bit_count and index <len(bit_string):
+            self.write_bit(bit_string[index])
+            index += 1
+
+        #whole bytes are converted 8 bits at a time
+        whole = (len(bit_string)-index) // 8*8
+        for start in range(index, index+whole,8):
+            self.buffer.append(int(bit_string[start:start+8], 2))
+        self.total_bits += whole
+        index += whole
+
+        #Leftover (<8) bits stay in current_byte
+        while index < len(bit_string):
+            self.write_bit(bit_string[index])
+            index += 1
+
 
     def finish(self):
         '''Pad the last byte with zeros. Returns (payload_bytes, padding_bits).'''
@@ -74,3 +93,15 @@ class BitReader:
         for _ in range(count):
             value = (value << 1) | self.read_bit()
         return value
+
+    def bit_string(self):
+        """All valid (non-padding) bits as a string of 0s and 1s."""
+        if not self.payload:
+            return ""
+        bits= bin(int.from_bytes(self.payload, "big"))[2:].zfill(len(self.payload)*8)
+        return bits[:self.total_bits]
+
+    def padding_is_zero(self):
+        """true if the unused padding bits at the end are all zero."""
+        padding = len(self.payload) *8 - self.total_bits
+        return padding == 0 or (self.payload[-1] & ((1 << padding) - 1)) == 0
