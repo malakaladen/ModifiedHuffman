@@ -1,83 +1,76 @@
+"""bitwriter.py - Member B: pack bits into bytes and read them back."""
+
+
 class BitWriter:
+    """Collects bits and packs them into bytes (MSB first)."""
+
     def __init__(self):
-        self.data = bytearray()
+        self.buffer = bytearray()
         self.current_byte = 0
-        self.used_bits = 0
-        self.bit_count = 0
+        self.bit_count = 0       # bits used in current_byte
+        self.total_bits = 0      # real bits written (padding excluded)
 
     def write_bit(self, bit):
-        '''Add one bit to the current byte.'''
+        '''Write a single bit (0/1 or "0"/"1").'''
         if bit not in (0, 1, "0", "1"):
-            raise ValueError("bit must be 0 or 1.")
+            raise ValueError(f"bit must be 0 or 1, got {bit!r}")
 
         self.current_byte = (self.current_byte << 1) | int(bit)
-        self.used_bits += 1
         self.bit_count += 1
+        self.total_bits += 1
 
-        if self.used_bits == 8:
-            self.data.append(self.current_byte)
+        if self.bit_count == 8:
+            self.buffer.append(self.current_byte)
             self.current_byte = 0
-            self.used_bits = 0
+            self.bit_count = 0
 
-    def write_bits(self, bits):
-        '''Write a sequence of bits.'''
-        for bit in bits:
+    def write_bits(self, bit_string):
+        '''Write a bit string such as "01101".'''
+        for bit in bit_string:
             self.write_bit(bit)
 
     def finish(self):
-        '''Return the packed bytes and number of padding bits.'''
-        data = bytearray(self.data)
-        padding_bits = (8 - self.used_bits) % 8
+        '''Pad the last byte with zeros. Returns (payload_bytes, padding_bits).'''
+        padding_bits = 0
 
-        #Pad the final byte with zeros.
-        if self.used_bits:
-            data.append(self.current_byte << padding_bits)
+        if self.bit_count > 0:
+            padding_bits = 8 - self.bit_count
+            self.buffer.append(self.current_byte << padding_bits)
+            self.current_byte = 0
+            self.bit_count = 0
 
-        return bytes(data), padding_bits
+        return bytes(self.buffer), padding_bits
 
 
 class BitReader:
-    def __init__(self, data, padding_bits=0):
-        if not isinstance(data, bytes):
-            raise TypeError("data must be bytes.")
+    """Reads packed bytes one bit at a time, ignoring the padding bits."""
 
-        if type(padding_bits) is not int or not 0 <= padding_bits <= 7:
+    def __init__(self, payload, padding_bits=0):
+        if not 0 <= padding_bits <= 7:
             raise ValueError("padding_bits must be between 0 and 7.")
+        if padding_bits and not payload:
+            raise ValueError("padding given but payload is empty.")
 
-        if not data and padding_bits:
-            raise ValueError("empty data cannot contain padding.")
-
-        if padding_bits and data[-1] & ((1 << padding_bits) - 1):
-            raise ValueError("padding bits must be zero.")
-
-        self.data = data
-        self.total_bits = len(data) * 8 - padding_bits
+        self.payload = payload
+        self.total_bits = len(payload) * 8 - padding_bits
         self.position = 0
 
+    def bits_remaining(self):
+        return self.total_bits - self.position
+
     def read_bit(self):
-        '''Read one bit, or return None at the end.'''
+        '''Return the next valid bit as 0 or 1.'''
         if self.position >= self.total_bits:
-            return None
+            raise EOFError("no more valid bits.")
 
-        byte_index = self.position // 8
-        bit_index = 7 - self.position % 8
-
-        bit = (self.data[byte_index] >> bit_index) & 1
+        byte = self.payload[self.position // 8]
+        bit = (byte >> (7 - self.position % 8)) & 1
         self.position += 1
-
         return bit
 
     def read_bits(self, count):
-        '''Read a fixed number of bits as a string.'''
-        if type(count) is not int or count < 0:
-            raise ValueError("count must be a non-negative integer.")
-
-        if self.position + count > self.total_bits:
-            raise EOFError("not enough bits remaining.")
-
-        bits = []
-
+        '''Read count bits and return them as an integer.'''
+        value = 0
         for _ in range(count):
-            bits.append(str(self.read_bit()))
-
-        return "".join(bits)
+            value = (value << 1) | self.read_bit()
+        return value
