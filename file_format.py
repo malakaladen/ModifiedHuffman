@@ -1,163 +1,117 @@
-import json
+"""file_format.py - Member B: header + payload reading/writing.
+
+File layout (big-endian):
+    magic            4 bytes   b"MHUF"
+    version          1 byte
+    original_length  4 bytes   number of original symbols (bytes)
+    padding_bits     1 byte    0..7
+    has_esc          1 byte    1 if an ESC symbol exists
+    num_kept         2 bytes   number of kept symbols
+    kept table       num_kept * (symbol 1 byte, frequency 4 bytes)
+    esc frequency    4 bytes   only if has_esc == 1
+    payload          packed bits
+The frequencies let the decoder rebuild the same Huffman tree as the encoder.
+"""
 import os
 import struct
 
 from bitwriter import BitWriter, BitReader
+from compression import ESC
+
+MAGIC = b"MHUF"
+VERSION = 1
+FIXED_HEADER = struct.Struct(">4sBIBBH")
+ENTRY = struct.Struct(">BI")
+ESC_ENTRY = struct.Struct(">I")
 
 
-ESC = 256
-MAGIC = b"MHF1"
+def header_size(num_kept, has_esc):
+    return FIXED_HEADER.size + ENTRY.size * num_kept + (ESC_ENTRY.size if has_esc else 0)
 
 
-def write_compressed_file(output_path, bit_string, metadata):
-    '''
-    Pack the encoded bits and save the header and payload.
-    Return file-size information.
-    '''
+def build_huffman_frequencies(metadata):
+    '''Kept symbol frequencies plus the combined ESC frequency.'''
+    freq = metadata["frequencies"]
+    huffman_frequencies = {symbol: freq[symbol] for symbol in metadata["kept"]}
+
+    if metadata["rare"]:
+        huffman_frequencies[ESC] = sum(freq[symbol] for symbol in metadata["rare"])
+
+    return huffman_frequencies
+
+
+def write_compressed_file(file_path, bit_string, metadata):
+    '''Pack bit_string into bytes and save header + payload. Returns file size.'''
     writer = BitWriter()
     writer.write_bits(bit_string)
-
     payload, padding_bits = writer.finish()
-    codebook = metadata["codebook"]
-    symbol_table = []
 
-    for symbol, code in sorted(codebook.items()):
-        if symbol == ESC:
-            frequency = sum(
-                metadata["frequencies"][s]
-                for s in metadata["rare"]
-            )
-        else:
-            frequency = metadata["frequencies"][symbol]
+    huffman_frequencies = build_huffman_frequencies(metadata)
+    kept_table = {s: f for s, f in huffman_frequencies.items() if s != ESC}
+    has_esc = ESC in huffman_frequencies
 
-        symbol_table.append({
-            "symbol": symbol,
-            "frequency": frequency,
-            "code": code,
-            "code_length": len(code),
-        })
+    with open(file_path, "wb") as f:
+        f.write(FIXED_HEADER.pack(MAGIC, VERSION, metadata["original_length"],
+                                  padding_bits, int(has_esc), len(kept_table)))
+        for symbol in sorted(kept_table):
+            f.write(ENTRY.pack(symbol, kept_table[symbol]))
+        if has_esc:
+            f.write(ESC_ENTRY.pack(huffman_frequencies[ESC]))
+        f.write(payload)
+
+    return os.path.getsize(file_path)
+
+
+def read_compressed_file(file_path):
+    '''Returns (header, BitReader). header has original_length and huffman_frequencies.'''
+    with open(file_path, "rb") as f:
+        data = f.read()
+
+    if len(data) < FIXED_HEADER.size:
+        raise ValueError("file is too small to be a compressed file.")
+
+    magic, version, original_length, padding_bits, has_esc, num_kept = \
+        FIXED_HEADER.unpack_from(data)
+
+    if magic != MAGIC:
+        raise ValueError("bad magic number: not a compressed file from this program.")
+    if version != VERSION:
+        raise ValueError(f"unsupported version {version}.")
+    if len(data) < header_size(num_kept, has_esc):
+        raise ValueError("file is truncated inside the header.")
+
+    position = FIXED_HEADER.size
+    huffman_frequencies = {}
+    for _ in range(num_kept):
+        symbol, frequency = ENTRY.unpack_from(data, position)
+        huffman_frequencies[symbol] = frequency
+        position += ENTRY.size
+
+    if has_esc:
+        huffman_frequencies[ESC] = ESC_ENTRY.unpack_from(data, position)[0]
+        position += ESC_ENTRY.size
 
     header = {
-        "version": 1,
-        "original_length": metadata["original_length"],
-        "bit_count": writer.bit_count,
+        "original_length": original_length,
         "padding_bits": padding_bits,
-        "has_esc": ESC in codebook,
-        "symbol_table": symbol_table,
+        "has_esc": bool(has_esc),
+        "huffman_frequencies": huffman_frequencies,
     }
-
-    header_bytes = json.dumps(
-        header, separators=(",", ":")
-    ).encode("utf-8")
-
-    #Store the header length before the header itself.
-    with open(output_path, "wb") as file:
-        file.write(MAGIC)
-        file.write(struct.pack(">I", len(header_bytes)))
-        file.write(header_bytes)
-        file.write(payload)
-
-    header_size = 8 + len(header_bytes)
-    expected_size = header_size + (writer.bit_count + 7) // 8
-    actual_size = os.path.getsize(output_path)
-
-    if actual_size != expected_size:
-        raise OSError("file size does not match expected size.")
-
-    return {
-        "output_path": str(output_path),
-        "header_bytes": header_size,
-        "payload_bytes": len(payload),
-        "padding_bits": padding_bits,
-        "file_bytes": actual_size,
-    }
+    return header, BitReader(data[position:], padding_bits)
 
 
-def read_compressed_file(input_path):
-    '''
-    Read the header and packed bytes.
-    Return the header, codebook and BitReader.
-    '''
-    with open(input_path, "rb") as file:
-        if file.read(4) != MAGIC:
-            raise ValueError("invalid compressed file.")
+def verify_file_size(file_path, expected_bits):
+    '''Check: file size == header size + packed payload size.
+    Returns (ok, file_size, header_bytes, payload_bytes).'''
+    with open(file_path, "rb") as f:
+        data = f.read()
 
-        size_bytes = file.read(4)
+    _, _, _, padding_bits, has_esc, num_kept = FIXED_HEADER.unpack_from(data)
+    header_bytes = header_size(num_kept, has_esc)
+    payload_bytes = len(data) - header_bytes
 
-        if len(size_bytes) != 4:
-            raise ValueError("missing header length.")
+    expected_payload = (expected_bits + 7) // 8
+    ok = (payload_bytes == expected_payload
+          and padding_bits == payload_bytes * 8 - expected_bits)
 
-        header_size = struct.unpack(">I", size_bytes)[0]
-        header_bytes = file.read(header_size)
-
-        if len(header_bytes) != header_size:
-            raise ValueError("incomplete header.")
-
-        header = json.loads(header_bytes.decode("utf-8"))
-        payload = file.read()
-
-    if header["version"] != 1:
-        raise ValueError("unsupported file version.")
-
-    original_length = header["original_length"]
-    bit_count = header["bit_count"]
-
-    if type(original_length) is not int or original_length < 0:
-        raise ValueError("invalid original length.")
-
-    if type(bit_count) is not int or bit_count < 0:
-        raise ValueError("invalid bit count.")
-
-    codebook = {}
-    total_frequency = 0
-
-    for entry in header["symbol_table"]:
-        symbol = entry["symbol"]
-        code = entry["code"]
-        frequency = entry["frequency"]
-
-        if type(symbol) is not int or not 0 <= symbol <= ESC:
-            raise ValueError("invalid symbol.")
-
-        if symbol in codebook:
-            raise ValueError("duplicate symbol.")
-
-        if not isinstance(code, str) or not code:
-            raise ValueError("invalid code.")
-
-        if any(bit not in "01" for bit in code):
-            raise ValueError("codes must contain only 0 and 1.")
-
-        if entry["code_length"] != len(code):
-            raise ValueError("incorrect code length.")
-
-        if type(frequency) is not int or frequency <= 0:
-            raise ValueError("invalid frequency.")
-
-        codebook[symbol] = code
-        total_frequency += frequency
-
-    if total_frequency != original_length:
-        raise ValueError("frequencies do not match original length.")
-
-    if header["has_esc"] != (ESC in codebook):
-        raise ValueError("incorrect ESC information.")
-
-    codes = sorted(codebook.values())
-
-    for first, second in zip(codes, codes[1:]):
-        if second.startswith(first):
-            raise ValueError("codebook must be prefix-free.")
-
-    reader = BitReader(payload, header["padding_bits"])
-
-    if reader.total_bits != bit_count:
-        raise ValueError("incorrect payload size or padding.")
-
-    if original_length == 0:
-        if bit_count or codebook:
-            raise ValueError("invalid empty-file metadata.")
-    elif not bit_count or not codebook:
-        raise ValueError("missing codes or encoded bits.")
-
-    return header, codebook, reader
+    return ok, len(data), header_bytes, payload_bytes
