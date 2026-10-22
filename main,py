@@ -1,0 +1,52 @@
+from compression import compress_data
+from file_format import write_compressed_file, read_compressed_file
+
+
+def main():
+    input_path = "input.txt"
+    output_path = "compressed.mhf"
+    p_min = 0.01
+
+    with open(input_path, "r", encoding="utf-8") as file:
+        data = file.read()
+
+    print("Running Member A compression...")
+    bit_string, metadata = compress_data(data, p_min)
+
+    print("Original length:", metadata["original_length"])
+    print("Encoded bit count:", len(bit_string))
+    print("Number of rare symbols:", len(metadata["rare"]))
+
+    print("\nWriting compressed file...")
+    file_info = write_compressed_file(
+        output_path,
+        bit_string,
+        metadata
+    )
+
+    print("Created file:", file_info["output_path"])
+    print("Header bytes:", file_info["header_bytes"])
+    print("Payload bytes:", file_info["payload_bytes"])
+    print("Padding bits:", file_info["padding_bits"])
+    print("Total file bytes:", file_info["file_bytes"])
+
+    print("\nReading compressed file...")
+    header, codebook, reader = read_compressed_file(output_path)
+
+    restored_bits = reader.read_bits(header["bit_count"])
+
+    assert restored_bits == bit_string
+    assert codebook == metadata["codebook"]
+    assert header["original_length"] == metadata["original_length"]
+    assert reader.read_bit() is None
+
+    print("Encoded bits preserved correctly.")
+    print("Codebook preserved correctly.")
+    print("Original length preserved correctly.")
+    print("No extra bits remain after reading.")
+
+    print("\nMember B test passed.")
+
+
+if __name__ == "__main__":
+    main()
