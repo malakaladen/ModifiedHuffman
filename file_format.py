@@ -17,17 +17,21 @@ import struct
 
 from bitwriter import BitWriter, BitReader
 
-try:
-    # Member A's names, re-exported so "from file_format import ..." also works
-    from compression import ESC, build_huffman_tree, generate_codes
-except ImportError:
-    ESC = 256   # same value Member A uses
+ESC = 256   # same value as Member A's compression.py (kept here to avoid circular imports)
 
 __all__ = [
     "write_compressed_file", "read_compressed_file", "verify_file_size",
     "build_huffman_frequencies", "header_size", "ESC",
-    "build_huffman_tree", "generate_codes",
 ]
+
+
+def __getattr__(name):
+    """Lazy re-export so 'from file_format import build_huffman_tree' still works."""
+    if name in ("build_huffman_tree", "generate_codes"):
+        import compression
+        return getattr(compression, name)
+    raise AttributeError(f"module 'file_format' has no attribute {name!r}")
+
 
 MAGIC = b"MHUF"
 VERSION = 1
