@@ -19,7 +19,7 @@ def read_input_file(file_path):
         return f.read()   
 
 
-def calculate_propbabilities(data):
+def calculate_probabilities(data):
     freq = Counter(data)
     total = len(data)
 
@@ -28,6 +28,8 @@ def calculate_propbabilities(data):
 
     probabilities = {symbol: count / total for symbol, count in freq.items()}     
     return freq, probabilities
+
+
 
 def split_symbols(probabilities, p_min):
     '''seperate kept symbols from rare symbols.'''
@@ -83,7 +85,7 @@ def compress_data(data, p_min):
     Encode bytes using Modified Huffman.
      rare byte : ESC code + its original 8-bit representation .
      returns the bit string and metadata for the file-format member.'''
-    freq, probabilities = calculate_propbabilities(data)
+    freq, probabilities = calculate_probabilities(data)
 
     if not data:
         return"", {
