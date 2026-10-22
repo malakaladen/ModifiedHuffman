@@ -1,43 +1,459 @@
-"""test_main.py - Member B test: bits -> packed bytes -> file -> bits.
+"""main.py - menu to use the project and a self-test suite that checks EVERY module.
 
-Usage:  python test_main.py [p_min]      (default p_min = 0.05)
-Needs compression.py (Member A) and input.txt in the same folder.
+  python main.py          -> interactive menu
+  python main.py test     -> run all self-tests and exit
+
+Files used:  bit_writer.py, compression.py, file_format.py, decompression.py
 """
 import os
+import random
 import sys
+import tempfile
 
-from compression import compress_data, read_input_file
-from file_format import write_compressed_file, read_compressed_file, verify_file_size, build_huffman_frequencies
+import compression
+from bit_writer import BitWriter, BitReader
+from compression import (ESC, read_input_file, compress_data, calculate_statistics,
+                         split_symbols)
+from file_format import (write_compressed_file, read_compressed_file, verify_file_size,
+                         build_huffman_frequencies)
+from decompression import decompress_file
 
-HERE = os.path.dirname(os.path.abspath(__file__))
-INPUT_PATH = os.path.join(HERE, "input.txt")
-COMPRESSED_PATH = os.path.join(HERE, "compressed.bin")
+DEFAULT_P_MIN = 0.05
+TEST_P_VALUES = [0, 0.001, 0.01, 0.05, 0.2, 1.0]
+SWEEP_P_VALUES = [0, 0.001, 0.005, 0.01, 0.02, 0.05, 0.1, 0.2, 0.5, 1.0]
+
+
+def probabilities_of(data):
+    """Works whether A kept the old typo'd name or fixed it."""
+    fn = (getattr(compression, "calculate_probabilities", None)
+          or getattr(compression, "calculate_propbabilities"))
+    return fn(data)
+
+
+# ======================================================================
+# Shared helpers for compress / decompress
+# ======================================================================
+def compress_to(src, dst, p_min):
+    """Compress file `src` into `dst`. Returns a dict with all the numbers."""
+    data = read_input_file(src)
+    bits, meta = compress_data(data, p_min)
+    file_size = write_compressed_file(dst, bits, meta)
+    ok, _, header_bytes, payload_bytes = verify_file_size(dst, len(bits))
+    return {"data": data, "bits": bits, "meta": meta, "file_size": file_size,
+            "size_ok": ok, "header_bytes": header_bytes, "payload_bytes": payload_bytes,
+            "stats": calculate_statistics(data, meta, bits)}
+
+
+def roundtrip_file(src, p_min, workdir):
+    """Compress then decompress `src`; returns (identical?, info dict)."""
+    packed = os.path.join(workdir, "packed.bin")
+    restored = os.path.join(workdir, "restored.out")
+    info = compress_to(src, packed, p_min)
+    decompress_file(packed, restored)
+    with open(restored, "rb") as f:
+        info["identical"] = f.read() == info["data"]
+    return info["identical"], info
+
+
+# ======================================================================
+# Self-tests
+# ======================================================================
+class Results:
+    def __init__(self):
+        self.passed = 0
+        self.failed = []
+
+    def check(self, name, func):
+        try:
+            func()
+        except Exception as e:           # assertion or any crash counts as a failure
+            self.failed.append(name)
+            print(f"  [FAIL] {name}: {type(e).__name__}: {e}")
+        else:
+            self.passed += 1
+            print(f"  [PASS] {name}")
+
+
+def expect_error(func, errors=(ValueError, OSError, EOFError)):
+    try:
+        func()
+    except errors:
+        return
+    raise AssertionError("expected an error but none was raised")
+
+
+def test_bit_writer(res):
+    print("\n[bit_writer.py]  BitWriter / BitReader")
+
+    def roundtrip(n):
+        def run():
+            bits = [random.randint(0, 1) for _ in range(n)]
+            w = BitWriter()
+            w.write_bits("".join(map(str, bits)))
+            payload, pad = w.finish()
+            assert pad == (8 - n % 8) % 8, f"padding is {pad}"
+            assert len(payload) == (n + 7) // 8, "wrong number of bytes"
+            r = BitReader(payload, pad)
+            assert [r.read_bit() for _ in range(n)] == bits
+            assert r.total_bits == n
+        return run
+
+    for n in (0, 1, 7, 8, 9, 1000):
+        res.check(f"write/read {n} bits", roundtrip(n))
+
+    def padding_value():
+        w = BitWriter()
+        w.write_bits("101")
+        payload, pad = w.finish()
+        assert payload == bytes([0b10100000]) and pad == 5
+
+    def raw_byte():
+        w = BitWriter()
+        w.write_bits("10100101" + "110")
+        payload, pad = w.finish()
+        r = BitReader(payload, pad)
+        v = r.read_bits(8)
+        v = int(v, 2) if isinstance(v, str) else v
+        assert v == 0xA5, f"read_bits(8) gave {v}"
+        v = r.read_bits(3)
+        v = int(v, 2) if isinstance(v, str) else v
+        assert v == 0b110
+
+    def stops_at_end():
+        w = BitWriter()
+        w.write_bits("101")
+        payload, pad = w.finish()
+        r = BitReader(payload, pad)
+        for _ in range(3):
+            r.read_bit()
+        try:
+            extra = r.read_bit()
+        except EOFError:
+            return
+        assert extra is None, "padding bits can be read as data"
+
+    res.check("zero padding of the last byte", padding_value)
+    res.check("read_bits(8) returns the raw byte", raw_byte)
+    res.check("reader ignores padding / stops at the end", stops_at_end)
+    res.check("write_bit rejects values other than 0/1",
+              lambda: expect_error(lambda: BitWriter().write_bit(2)))
+
+
+def test_compression(res):
+    print("\n[compression.py]  probabilities, p_min split, codes")
+    data = b"a" * 60 + b"b" * 30 + b"c" * 7 + b"d" * 3
+
+    def probs():
+        freq, p = probabilities_of(data)
+        assert abs(sum(p.values()) - 1) < 1e-9
+        assert freq[ord("a")] == 60
+
+    def split():
+        _, p = probabilities_of(data)
+        kept, rare = split_symbols(p, 0.05)
+        assert kept == {97, 98, 99}, f"kept={kept}"
+        assert rare == {100}, f"rare={rare}"
+
+    def bad_pmin():
+        _, p = probabilities_of(data)
+        expect_error(lambda: split_symbols(p, -0.1))
+        expect_error(lambda: split_symbols(p, 1.5))
+
+    def esc_frequency():
+        _, meta = compress_data(data, 0.05)
+        hf = build_huffman_frequencies(meta)
+        assert hf[ESC] == 3, f"ESC frequency is {hf.get(ESC)}"
+        assert sum(hf.values()) == len(data)
+
+    def prefix_free():
+        _, meta = compress_data(data, 0.05)
+        codes = list(meta["codebook"].values())
+        for i, x in enumerate(codes):
+            for j, y in enumerate(codes):
+                assert i == j or not y.startswith(x), f"{x} is a prefix of {y}"
+        assert abs(sum(2 ** -len(c) for c in codes) - 1) < 1e-9, "Kraft sum is not 1"
+
+    def bit_count():
+        bits, meta = compress_data(data, 0.05)
+        cb = meta["codebook"]
+        expected = sum(len(cb[s]) if s in meta["kept"] else len(cb[ESC]) + 8 for s in data)
+        assert len(bits) == expected, f"{len(bits)} != {expected}"
+
+    def single_symbol():
+        bits, meta = compress_data(b"A" * 10, 0.05)
+        assert meta["codebook"] == {65: "0"} and bits == "0" * 10
+
+    def empty():
+        bits, meta = compress_data(b"", 0.05)
+        assert bits == "" and meta["codebook"] == {}
+
+    def p_zero():
+        _, meta = compress_data(data, 0)
+        assert not meta["rare"] and ESC not in meta["codebook"]
+
+    def all_rare():
+        _, meta = compress_data(b"abcabc", 1.0)
+        assert not meta["kept"] and meta["rare"] == {97, 98, 99}
+        assert meta["codebook"] == {ESC: "0"}
+
+    def stats():
+        d = b"ab" * 50
+        bits, meta = compress_data(d, 0)
+        s = calculate_statistics(d, meta, bits)
+        assert abs(s["entropy"] - 1.0) < 1e-9
+        assert abs(s["average_code_length"] - 1.0) < 1e-9
+        assert s["encoded_bits"] == len(bits) == 100
+        assert abs(s["compression_ratio"] - 8.0) < 1e-9
+
+    for name, fn in [("probabilities add up to 1", probs),
+                     ("symbols below p_min become rare, others kept", split),
+                     ("p_min outside [0,1] is rejected", bad_pmin),
+                     ("ESC frequency = sum of rare frequencies", esc_frequency),
+                     ("codes are prefix-free (Kraft sum = 1)", prefix_free),
+                     ("encoded bit count = codes + 8 raw bits per rare", bit_count),
+                     ("single symbol gets the 1-bit code '0'", single_symbol),
+                     ("empty input gives empty output", empty),
+                     ("p_min = 0 gives no ESC (plain Huffman)", p_zero),
+                     ("all symbols rare -> only ESC", all_rare),
+                     ("entropy / average length / ratio", stats)]:
+        res.check(name, fn)
+
+
+def test_file_format(res, tmp):
+    print("\n[file_format.py]  header + packed payload")
+    data = b"the quick brown fox jumps over the lazy dog. " * 40
+    path = os.path.join(tmp, "ff.bin")
+    bits, meta = compress_data(data, 0.05)
+    size = write_compressed_file(path, bits, meta)
+    raw = open(path, "rb").read()
+
+    def header_roundtrip():
+        header, reader = read_compressed_file(path)
+        assert header["original_length"] == len(data)
+        assert header["huffman_frequencies"] == build_huffman_frequencies(meta)
+        assert reader.total_bits == len(bits)
+
+    def size_check():
+        ok, fsize, hbytes, pbytes = verify_file_size(path, len(bits))
+        assert ok and fsize == size == os.path.getsize(path)
+        assert pbytes == (len(bits) + 7) // 8
+
+    def real_bits():
+        _, _, _, pbytes = verify_file_size(path, len(bits))
+        assert pbytes * 8 < len(bits) + 8, "payload looks like text, not bits"
+
+    def write(name, content):
+        p = os.path.join(tmp, name)
+        with open(p, "wb") as f:
+            f.write(content)
+        return p
+
+    res.check("header written and read back correctly", header_roundtrip)
+    res.check("file size = header + ceil(bits/8)", size_check)
+    res.check("payload is stored as real bits", real_bits)
+    res.check("wrong magic number is rejected", lambda: expect_error(
+        lambda: read_compressed_file(write("m.bin", b"XXXX" + raw[4:]))))
+    res.check("file too small is rejected", lambda: expect_error(
+        lambda: read_compressed_file(write("s.bin", b"MH"))))
+    res.check("file cut inside the header is rejected", lambda: expect_error(
+        lambda: read_compressed_file(write("t.bin", raw[:12]))))
+
+
+def test_roundtrip(res, tmp):
+    print("\n[decompression.py]  full compress -> decompress round trips")
+    random.seed(3)
+    cases = {
+        "empty file": b"",
+        "one repeated character": b"A" * 100,
+        "two symbols": b"AB" * 50,
+        "normal text": b"the quick brown fox jumps over the lazy dog. " * 60,
+        "text with rare symbols": b"a" * 600 + b"b" * 300 + b"c" * 70 + bytes(range(100, 130)),
+        "skewed binary": bytes(random.choices(range(256), [60] + [1] * 255, k=5000)),
+        "uniform random": os.urandom(3000),
+        "all 256 byte values": bytes(range(256)) * 5,
+        "newlines and UTF-8": "héllo wörld\r\n\r\nمرحبا\n".encode("utf-8") * 30,
+    }
+    src = os.path.join(tmp, "rt_src")
+
+    def one(data, p):
+        def run():
+            with open(src, "wb") as f:
+                f.write(data)
+            identical, info = roundtrip_file(src, p, tmp)
+            assert identical, "restored file differs from the original"
+            assert info["size_ok"], "file size does not match header + payload"
+        return run
+
+    for name, data in cases.items():
+        for p in TEST_P_VALUES:
+            res.check(f"{name}, p_min={p}", one(data, p))
+
+    print("\n[decompression.py]  damaged files must give clean errors")
+    data = cases["normal text"]
+    with open(src, "wb") as f:
+        f.write(data)
+    packed = os.path.join(tmp, "dmg.bin")
+    out = os.path.join(tmp, "dmg.out")
+    info = compress_to(src, packed, 0.05)
+    raw = open(packed, "rb").read()
+
+    def damaged(label, content):
+        def run():
+            with open(packed, "wb") as f:
+                f.write(content)
+            if os.path.exists(out):
+                os.remove(out)
+            expect_error(lambda: decompress_file(packed, out))
+            assert not os.path.exists(out), "a partial output file was left behind"
+        res.check(label, run)
+
+    flipped = bytearray(raw)
+    flipped[16] ^= 0x40
+    damaged("payload cut short", raw[:len(raw) - 5])
+    damaged("frequency table damaged", bytes(flipped))
+    damaged("not a compressed file", b"hello world, definitely not compressed")
+    damaged("extra bytes appended", raw + b"\xff\xff")
+
+
+def run_all_tests():
+    random.seed(1)
+    res = Results()
+    with tempfile.TemporaryDirectory() as tmp:
+        test_bit_writer(res)
+        test_compression(res)
+        test_file_format(res, tmp)
+        test_roundtrip(res, tmp)
+    total = res.passed + len(res.failed)
+    print("\n" + "=" * 60)
+    print(f"RESULT: {res.passed}/{total} tests passed")
+    if res.failed:
+        print("FAILED:")
+        for name in res.failed:
+            print("  -", name)
+    else:
+        print("ALL TESTS PASSED")
+    print("=" * 60)
+    return not res.failed
+
+
+# ======================================================================
+# Menu actions
+# ======================================================================
+def ask(prompt, default=None):
+    suffix = f" [{default}]" if default else ""
+    while True:
+        text = input(f"{prompt}{suffix}: ").strip().strip('"')
+        if text:
+            return text
+        if default:
+            return default
+
+
+def ask_p_min():
+    while True:
+        text = input(f"Minimum symbol probability p_min (0..1) [{DEFAULT_P_MIN}]: ").strip()
+        try:
+            p = float(text) if text else DEFAULT_P_MIN
+        except ValueError:
+            print("Please enter a number, e.g. 0.05")
+            continue
+        if 0 <= p <= 1:
+            return p
+        print("p_min must be between 0 and 1.")
+
+
+def print_compression_report(info, src, dst, p_min):
+    data, meta, stats = info["data"], info["meta"], info["stats"]
+    print(f"\n  p_min               : {p_min}")
+    print(f"  original size       : {len(data)} bytes")
+    print(f"  compressed file     : {info['file_size']} bytes "
+          f"(header {info['header_bytes']} + payload {info['payload_bytes']})")
+    if info["file_size"]:
+        print(f"  overall ratio       : {len(data) / info['file_size']:.3f}")
+    print(f"  kept / rare symbols : {len(meta['kept'])} / {len(meta['rare'])}")
+    print(f"  entropy             : {stats['entropy']:.4f} bits/symbol")
+    print(f"  average code length : {stats['average_code_length']:.4f} bits/symbol")
+    print(f"  payload bits        : {stats['encoded_bits']}")
+    print(f"  size check          : {'OK' if info['size_ok'] else 'MISMATCH'}")
+    codebook = meta["codebook"]
+    if 0 < len(codebook) <= 40:
+        print("  codebook:")
+        for sym in sorted(codebook):
+            label = "ESC (others)" if sym == ESC else (
+                repr(chr(sym)) if 32 <= sym < 127 else f"byte {sym}")
+            print(f"    {label:>14} -> {codebook[sym]}")
+    print(f"  saved to            : {dst}")
+
+
+def action_compress():
+    src = ask("Input file")
+    dst = ask("Compressed output file", "compressed.bin")
+    p = ask_p_min()
+    print_compression_report(compress_to(src, dst, p), src, dst, p)
+
+
+def action_decompress():
+    src = ask("Compressed file")
+    dst = ask("Restored output file", "restored.out")
+    n = decompress_file(src, dst)
+    print(f"\n  restored {n} bytes -> {dst}")
+
+
+def action_roundtrip():
+    src = ask("Input file")
+    p = ask_p_min()
+    with tempfile.TemporaryDirectory() as tmp:
+        identical, info = roundtrip_file(src, p, tmp)
+    print_compression_report(info, src, "(temporary file)", p)
+    print("\n  ROUND TRIP:", "PASS - restored file is identical" if identical
+          else "FAIL - restored file differs!")
+
+
+def action_sweep():
+    src = ask("Input file")
+    data = read_input_file(src)
+    print(f"\n  file: {src} ({len(data)} bytes)\n")
+    print(f"  {'p_min':>7} {'rare':>5} {'avg len':>8} {'file size':>10} {'ratio':>7}  round trip")
+    with tempfile.TemporaryDirectory() as tmp:
+        for p in SWEEP_P_VALUES:
+            identical, info = roundtrip_file(src, p, tmp)
+            ratio = len(data) / info["file_size"] if info["file_size"] else 0
+            print(f"  {p:>7} {len(info['meta']['rare']):>5} "
+                  f"{info['stats']['average_code_length']:>8.3f} "
+                  f"{info['file_size']:>10} {ratio:>7.3f}  {'OK' if identical else 'FAIL'}")
+
+
+MENU = [
+    ("Compress a file", action_compress),
+    ("Decompress a file", action_decompress),
+    ("Round-trip test on a file (compress + decompress + compare)", action_roundtrip),
+    ("p_min experiment on a file (size vs p_min table)", action_sweep),
+    ("Run ALL self-tests (every module)", run_all_tests),
+]
 
 
 def main():
-    p_min = float(sys.argv[1]) if len(sys.argv) > 1 else 0.05
+    if len(sys.argv) > 1 and sys.argv[1] == "test":
+        sys.exit(0 if run_all_tests() else 1)
 
-    data = read_input_file(INPUT_PATH)
-    bit_string, metadata = compress_data(data, p_min)
-
-    # Member B: write the binary file
-    write_compressed_file(COMPRESSED_PATH, bit_string, metadata)
-
-    # Member B: verify file size = header + packed payload
-    ok, file_size, header_bytes, payload_bytes = verify_file_size(COMPRESSED_PATH, len(bit_string))
-    print(f"Compressed file : {COMPRESSED_PATH}")
-    print(f"File size       : {file_size} bytes = header {header_bytes} + payload {payload_bytes}"
-          f" -> {'OK' if ok else 'MISMATCH'}")
-    print(f"Encoded bits    : {len(bit_string)} (original {len(data)} bytes)")
-
-    # Member B: read header + unpack only the valid bits
-    header, reader = read_compressed_file(COMPRESSED_PATH)
-    bits_back = "".join(str(reader.read_bit()) for _ in range(reader.total_bits))
-
-    print("Header matches  :", header["original_length"] == metadata["original_length"]
-          and header["huffman_frequencies"] == build_huffman_frequencies(metadata))
-    print("Bits match      :", bits_back == bit_string)
-    print("Padding ignored :", reader.bits_remaining() == 0)
+    try:
+        while True:
+            print("\n=== Modified Huffman ===")
+            for i, (label, _) in enumerate(MENU, 1):
+                print(f"  {i}. {label}")
+            print("  0. Exit")
+            choice = input("Choose: ").strip()
+            if choice == "0":
+                break
+            if not choice.isdigit() or not 1 <= int(choice) <= len(MENU):
+                print("Please choose a number from the menu.")
+                continue
+            try:
+                MENU[int(choice) - 1][1]()
+            except (OSError, ValueError, EOFError) as e:
+                print(f"\n  Error: {e}")
+    except (EOFError, KeyboardInterrupt):
+        print("\nBye.")
 
 
 if __name__ == "__main__":
