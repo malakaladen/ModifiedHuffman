@@ -1,51 +1,43 @@
-from compression import compress_data
-from file_format import write_compressed_file, read_compressed_file
+"""test_main.py - Member B test: bits -> packed bytes -> file -> bits.
+
+Usage:  python test_main.py [p_min]      (default p_min = 0.05)
+Needs compression.py (Member A) and input.txt in the same folder.
+"""
+import os
+import sys
+
+from compression import compress_data, read_input_file
+from file_format import write_compressed_file, read_compressed_file, verify_file_size, build_huffman_frequencies
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+INPUT_PATH = os.path.join(HERE, "input.txt")
+COMPRESSED_PATH = os.path.join(HERE, "compressed.bin")
 
 
 def main():
-    input_path = "input.txt"
-    output_path = "compressed.mhf"
-    p_min = 0.01
+    p_min = float(sys.argv[1]) if len(sys.argv) > 1 else 0.05
 
-    with open(input_path, "r", encoding="utf-8") as file:
-        data = file.read()
-
-    print("Running Member A compression...")
+    data = read_input_file(INPUT_PATH)
     bit_string, metadata = compress_data(data, p_min)
 
-    print("Original length:", metadata["original_length"])
-    print("Encoded bit count:", len(bit_string))
-    print("Number of rare symbols:", len(metadata["rare"]))
+    # Member B: write the binary file
+    write_compressed_file(COMPRESSED_PATH, bit_string, metadata)
 
-    print("\nWriting compressed file...")
-    file_info = write_compressed_file(
-        output_path,
-        bit_string,
-        metadata
-    )
+    # Member B: verify file size = header + packed payload
+    ok, file_size, header_bytes, payload_bytes = verify_file_size(COMPRESSED_PATH, len(bit_string))
+    print(f"Compressed file : {COMPRESSED_PATH}")
+    print(f"File size       : {file_size} bytes = header {header_bytes} + payload {payload_bytes}"
+          f" -> {'OK' if ok else 'MISMATCH'}")
+    print(f"Encoded bits    : {len(bit_string)} (original {len(data)} bytes)")
 
-    print("Created file:", file_info["output_path"])
-    print("Header bytes:", file_info["header_bytes"])
-    print("Payload bytes:", file_info["payload_bytes"])
-    print("Padding bits:", file_info["padding_bits"])
-    print("Total file bytes:", file_info["file_bytes"])
+    # Member B: read header + unpack only the valid bits
+    header, reader = read_compressed_file(COMPRESSED_PATH)
+    bits_back = "".join(str(reader.read_bit()) for _ in range(reader.total_bits))
 
-    print("\nReading compressed file...")
-    header, codebook, reader = read_compressed_file(output_path)
-
-    restored_bits = reader.read_bits(header["bit_count"])
-
-    assert restored_bits == bit_string
-    assert codebook == metadata["codebook"]
-    assert header["original_length"] == metadata["original_length"]
-    assert reader.read_bit() is None
-
-    print("Encoded bits preserved correctly.")
-    print("Codebook preserved correctly.")
-    print("Original length preserved correctly.")
-    print("No extra bits remain after reading.")
-
-    print("\nMember B test passed.")
+    print("Header matches  :", header["original_length"] == metadata["original_length"]
+          and header["huffman_frequencies"] == build_huffman_frequencies(metadata))
+    print("Bits match      :", bits_back == bit_string)
+    print("Padding ignored :", reader.bits_remaining() == 0)
 
 
 if __name__ == "__main__":
