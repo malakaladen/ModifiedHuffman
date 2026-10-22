@@ -277,7 +277,7 @@ def main(argv=None):
             elif args.command == "decompress":
                 action_decompress(args.input, args.output)
             elif args.command == "analyze":
-                action_analyze(args.input, args.p_min)
+                action_analyzer(args.input, args.p_min)
             elif args.command == "roundtrip":
                 return 0 if action_roundtrip(args.input, args.p_min) else 1
             elif args.command == "sweep":
@@ -293,4 +293,4 @@ def main(argv=None):
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())
