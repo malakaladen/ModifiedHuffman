@@ -66,55 +66,35 @@ def generate_codes(root):
     if root is None:
         return codes
 
-    def visit(node,prefix):
+    stack = [(root, "")]
+    while stack:
+        node, prefix =stack.pop()
         if node.symbol is not None:
-            #A single-symbol tree still needs a 1-bit code.
             codes[node.symbol] = prefix or "0"
-            return
+        else:
+            stack.append((node.left, prefix + "0"))
+            stack.append((node.right, prefix + "1"))
 
-        visit(node.left, prefix + "0")
-        visit(node.right, prefix + "1")
-
-    visit(root,"")
     return codes
 
-def compress_data(data, p_min):
-    '''
-    Encode bytes using Modified Huffman.
-     rare byte : ESC code + its original 8-bit representation .
-     returns the bit string and metadata for the file-format member.'''
-    freq, probabilities = calculate_probabilities(data)
-
-    if not data:
-        return"", {
-            "frequencies": freq,
-            "probabilities": probabilities,
-            "kept": set(),
-            "rare": set(),
-            "codebook": {},
-            "original_length": 0,
-        }    
-    kept, rare = split_symbols(probabilities, p_min)
-    #Build the Huffman alphabet.
-    huffman_frequencies = {symbol: freq[symbol] for symbol in kept}
-
+def huffman_frequencies(freq,kept,rare):
+    table = {symbol: freq[symbol] for symbol in kept}
     if rare:
-        huffman_frequencies[ESC] = sum(freq[symbol] for symbol in rare)
+        table[ESC] = sum(freq[symbol] for symbol in rare)
+    return table
 
-    tree = build_huffman_tree(huffman_frequencies)
+def compress_data(data, p_min):
+    freq, probabilities = calculate_probabilities(data)
+    kept, rare = split_symbols(probabilities, p_min)
+
+    tree = build_huffman_tree(huffman_frequencies(freq, kept, rare))
     codebook = generate_codes(tree)
 
-    #Encode the input in its original order.
-    output_bits = []
+    esc_code = codebook.get(ESC, "")
+    lookup= {symbol: codebook[symbol] for symbol in kept}
+    lookup.update({symbol: esc_code + f"{symbol:08b}" for symbol in rare})
 
-    for symbol in data:
-        if symbol in kept:
-            output_bits.append(codebook[symbol])
-        else:
-            output_bits.append(codebook[ESC])
-            output_bits.append(f"{symbol:08b}")
-
-    bit_string = "".join(output_bits)
+    bit_string = "".join(map(lookup.__getitem__, data))
 
     metadata = {
         "frequencies": freq,
@@ -125,7 +105,6 @@ def compress_data(data, p_min):
         "original_length": len(data),
     }
 
-    return bit_string, metadata
 
 def calculate_statistics(data, metadata, bit_string):
     """Calculate entropy, average encodedlength and ratio."""
@@ -147,53 +126,17 @@ def calculate_statistics(data, metadata, bit_string):
     esc_length = len(codebook[ESC]) if rare else 0
     #Include the 8 raw bits used for every rare symbol.
     average_length = sum(
-        probabilities[symbol] * (esc_length + 8 
+        probability * (esc_length + 8 
                         if symbol in rare
                         else len(codebook[symbol])
                     )
-                    for symbol in probabilities
+                    for symbol, probability in probabilities.items()
                 )
     encoded_bits = len(bit_string)
-
-    #payload-only ration: original bits / encoded payload bits.
-    ratio = ((total *8) /encoded_bits if encoded_bits > 0  else None)
 
     return {
         "entropy": entropy,
         "average_code_length": average_length,
         "encoded_bits": encoded_bits,
-        "compression_ratio":ratio,
+        "compression_ratio":(total*8)/encoded_bits if encoded_bits else None,
     }                  
-
-def main():
-    input_path =Path("input.txt")
-    p_min = float(input("Enter P_min (between 0 and 1): "))
-
-    data = read_input_file(input_path)
-    bit_string, metadata = compress_data(data, p_min)
-    stats = calculate_statistics(data, metadata, bit_string)
-    assert abs(stats["average_code_length"]* len(data) - len(bit_string)) < 1e-6
-
-    print("\nSymbol probabilities:")
-    for symbol, probability in sorted(metadata["probabilities"].items()):          
-        print(f"Byte {symbol}: {probability:.6f}")
-
-    print("\nKept symbols:", sorted(metadata["kept"]))
-    print("Rare symbols:", sorted(metadata["rare"]))
-    print("codebook:",metadata["codebook"])
-
-    print("\nEncoded bit string:", bit_string)
-    print("Entropy:", round(stats["entropy"], 4), "bits/symbol")
-    print(
-        "Average encoded length:",
-        round(stats["average_code_length"], 4),
-        "bits/symbol",
-    )
-    print("Encoded payload bits:", stats["encoded_bits"])
-    print("Payload compression ratio:", stats["compression_ratio"])
-
-    with open("encoded_preview.txt","w",encoding="ascii") as file:
-        file.write(bit_string)
-
-if __name__ == "__main__":
-    main()

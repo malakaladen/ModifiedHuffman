@@ -1,27 +1,17 @@
-from compression import build_huffman_tree
-from file_format import read_compressed_file, ESC
-
-
-def _read_bit(reader):
-    bit = reader.read_bit()
-    if bit is None:                      # tolerate a BitReader that returns None at the end
-        raise EOFError("no more valid bits.")
-    return bit
-
-
-def _read_byte(reader):
-    value = reader.read_bits(8)
-    return int(value, 2) if isinstance(value, str) else value   # int or "01010101"
+from compression import ESC, build_huffman_tree
+from file_format import read_compressed_file
 
 
 def decode_data(header, reader):
     """Rebuild the Huffman tree from the header frequencies and decode the bits."""
     original_length = header["original_length"]
     frequencies = header["huffman_frequencies"]
-    output = bytearray()
 
     if original_length == 0:
-        return bytes(output)
+        if frequencies or reader.total_bits:
+            raise ValueError("corrupted file: data present in an empty file.")
+        return b""
+
 
     if not frequencies:
         raise ValueError("corrupted file: empty symbol table.")
@@ -30,25 +20,39 @@ def decode_data(header, reader):
 
     # Same function and same tie-breaking as the encoder -> same tree.
     root = build_huffman_tree(frequencies)
+    bits = reader.bit_string()
+    end = len(bits)
+    pos=0
+    output = bytearray()
 
     while len(output) < original_length:
         if root.symbol is not None:
             # Only one symbol exists: its code is the single bit "0".
-            _read_bit(reader)
+            if pos >=end:
+                raise EOFError
+            pos +=1
             symbol = root.symbol
         else:
             node = root
             while node.symbol is None:
-                node = node.right if _read_bit(reader) else node.left
+                if pos >= end:
+                    raise EOFError
+                node = node.right if bits[pos] == "1" else node.left
+                pos +=1
             symbol = node.symbol
 
         if symbol == ESC:
-            output.append(_read_byte(reader))   # rare symbol: next 8 bits are the raw byte
+            if pos +8 >end:
+                raise EOFError
+            output.append(int(bits[pos:pos +8],2))
+            pos +=8
         else:
             output.append(symbol)
 
-    if reader.position != reader.total_bits:
-        raise ValueError("corrupted file: extra bits after the last symbol.")
+    if pos !=end:
+        raise ValueError("corrupted file: Extra bits after the last symbol")
+    if not reader.padding_is_zero():
+        raise ValueError("corrupted file:padding bits are not zero.")
 
     return bytes(output)
 
