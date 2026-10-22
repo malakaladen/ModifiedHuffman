@@ -9,6 +9,7 @@ import os
 import random
 import sys
 import tempfile
+from datetime import datetime
 
 import compression
 from bit_writer import BitWriter, BitReader
@@ -21,6 +22,41 @@ from decompression import decompress_file
 DEFAULT_P_MIN = 0.05
 TEST_P_VALUES = [0, 0.001, 0.01, 0.05, 0.2, 1.0]
 SWEEP_P_VALUES = [0, 0.001, 0.005, 0.01, 0.02, 0.05, 0.1, 0.2, 0.5, 1.0]
+
+LOG_PATH = "output_log.txt"      # everything the program prints is also saved here
+_log = None
+
+
+def out(*args, sep=" ", end="\n"):
+    """Print to the screen AND append the same text to the log file."""
+    text = sep.join(str(a) for a in args) + end
+    sys.stdout.write(text)
+    if _log:
+        _log.write(text)
+        _log.flush()
+
+
+def log_only(text):
+    """Save something (like what the user typed) to the log without printing it."""
+    if _log:
+        _log.write(text + "\n")
+        _log.flush()
+
+
+def start_log():
+    global _log
+    _log = open(LOG_PATH, "a", encoding="utf-8")
+    _log.write("\n" + "#" * 60 + "\n")
+    _log.write(f"# Run started: {datetime.now():%Y-%m-%d %H:%M:%S}\n")
+    _log.write("#" * 60 + "\n")
+
+
+def stop_log():
+    global _log
+    if _log:
+        _log.close()
+        _log = None
+
 
 
 def probabilities_of(data):
@@ -68,10 +104,10 @@ class Results:
             func()
         except Exception as e:           # assertion or any crash counts as a failure
             self.failed.append(name)
-            print(f"  [FAIL] {name}: {type(e).__name__}: {e}")
+            out(f"  [FAIL] {name}: {type(e).__name__}: {e}")
         else:
             self.passed += 1
-            print(f"  [PASS] {name}")
+            out(f"  [PASS] {name}")
 
 
 def expect_error(func, errors=(ValueError, OSError, EOFError)):
@@ -83,7 +119,7 @@ def expect_error(func, errors=(ValueError, OSError, EOFError)):
 
 
 def test_bit_writer(res):
-    print("\n[bit_writer.py]  BitWriter / BitReader")
+    out("\n[bit_writer.py]  BitWriter / BitReader")
 
     def roundtrip(n):
         def run():
@@ -140,7 +176,7 @@ def test_bit_writer(res):
 
 
 def test_compression(res):
-    print("\n[compression.py]  probabilities, p_min split, codes")
+    out("\n[compression.py]  probabilities, p_min split, codes")
     data = b"a" * 60 + b"b" * 30 + b"c" * 7 + b"d" * 3
 
     def probs():
@@ -220,7 +256,7 @@ def test_compression(res):
 
 
 def test_file_format(res, tmp):
-    print("\n[file_format.py]  header + packed payload")
+    out("\n[file_format.py]  header + packed payload")
     data = b"the quick brown fox jumps over the lazy dog. " * 40
     path = os.path.join(tmp, "ff.bin")
     bits, meta = compress_data(data, 0.05)
@@ -260,7 +296,7 @@ def test_file_format(res, tmp):
 
 
 def test_roundtrip(res, tmp):
-    print("\n[decompression.py]  full compress -> decompress round trips")
+    out("\n[decompression.py]  full compress -> decompress round trips")
     random.seed(3)
     cases = {
         "empty file": b"",
@@ -288,12 +324,12 @@ def test_roundtrip(res, tmp):
         for p in TEST_P_VALUES:
             res.check(f"{name}, p_min={p}", one(data, p))
 
-    print("\n[decompression.py]  damaged files must give clean errors")
+    out("\n[decompression.py]  damaged files must give clean errors")
     data = cases["normal text"]
     with open(src, "wb") as f:
         f.write(data)
     packed = os.path.join(tmp, "dmg.bin")
-    out = os.path.join(tmp, "dmg.out")
+    dmg_out = os.path.join(tmp, "dmg.out")
     info = compress_to(src, packed, 0.05)
     raw = open(packed, "rb").read()
 
@@ -301,10 +337,10 @@ def test_roundtrip(res, tmp):
         def run():
             with open(packed, "wb") as f:
                 f.write(content)
-            if os.path.exists(out):
-                os.remove(out)
-            expect_error(lambda: decompress_file(packed, out))
-            assert not os.path.exists(out), "a partial output file was left behind"
+            if os.path.exists(dmg_out):
+                os.remove(dmg_out)
+            expect_error(lambda: decompress_file(packed, dmg_out))
+            assert not os.path.exists(dmg_out), "a partial output file was left behind"
         res.check(label, run)
 
     flipped = bytearray(raw)
@@ -324,15 +360,15 @@ def run_all_tests():
         test_file_format(res, tmp)
         test_roundtrip(res, tmp)
     total = res.passed + len(res.failed)
-    print("\n" + "=" * 60)
-    print(f"RESULT: {res.passed}/{total} tests passed")
+    out("\n" + "=" * 60)
+    out(f"RESULT: {res.passed}/{total} tests passed")
     if res.failed:
-        print("FAILED:")
+        out("FAILED:")
         for name in res.failed:
-            print("  -", name)
+            out("  -", name)
     else:
-        print("ALL TESTS PASSED")
-    print("=" * 60)
+        out("ALL TESTS PASSED")
+    out("=" * 60)
     return not res.failed
 
 
@@ -343,6 +379,7 @@ def ask(prompt, default=None):
     suffix = f" [{default}]" if default else ""
     while True:
         text = input(f"{prompt}{suffix}: ").strip().strip('"')
+        log_only(f"{prompt}{suffix}: {text}")
         if text:
             return text
         if default:
@@ -352,37 +389,38 @@ def ask(prompt, default=None):
 def ask_p_min():
     while True:
         text = input(f"Minimum symbol probability p_min (0..1) [{DEFAULT_P_MIN}]: ").strip()
+        log_only(f"p_min: {text or DEFAULT_P_MIN}")
         try:
             p = float(text) if text else DEFAULT_P_MIN
         except ValueError:
-            print("Please enter a number, e.g. 0.05")
+            out("Please enter a number, e.g. 0.05")
             continue
         if 0 <= p <= 1:
             return p
-        print("p_min must be between 0 and 1.")
+        out("p_min must be between 0 and 1.")
 
 
 def print_compression_report(info, src, dst, p_min):
     data, meta, stats = info["data"], info["meta"], info["stats"]
-    print(f"\n  p_min               : {p_min}")
-    print(f"  original size       : {len(data)} bytes")
-    print(f"  compressed file     : {info['file_size']} bytes "
+    out(f"\n  p_min               : {p_min}")
+    out(f"  original size       : {len(data)} bytes")
+    out(f"  compressed file     : {info['file_size']} bytes "
           f"(header {info['header_bytes']} + payload {info['payload_bytes']})")
     if info["file_size"]:
-        print(f"  overall ratio       : {len(data) / info['file_size']:.3f}")
-    print(f"  kept / rare symbols : {len(meta['kept'])} / {len(meta['rare'])}")
-    print(f"  entropy             : {stats['entropy']:.4f} bits/symbol")
-    print(f"  average code length : {stats['average_code_length']:.4f} bits/symbol")
-    print(f"  payload bits        : {stats['encoded_bits']}")
-    print(f"  size check          : {'OK' if info['size_ok'] else 'MISMATCH'}")
+        out(f"  overall ratio       : {len(data) / info['file_size']:.3f}")
+    out(f"  kept / rare symbols : {len(meta['kept'])} / {len(meta['rare'])}")
+    out(f"  entropy             : {stats['entropy']:.4f} bits/symbol")
+    out(f"  average code length : {stats['average_code_length']:.4f} bits/symbol")
+    out(f"  payload bits        : {stats['encoded_bits']}")
+    out(f"  size check          : {'OK' if info['size_ok'] else 'MISMATCH'}")
     codebook = meta["codebook"]
     if 0 < len(codebook) <= 40:
-        print("  codebook:")
+        out("  codebook:")
         for sym in sorted(codebook):
             label = "ESC (others)" if sym == ESC else (
                 repr(chr(sym)) if 32 <= sym < 127 else f"byte {sym}")
-            print(f"    {label:>14} -> {codebook[sym]}")
-    print(f"  saved to            : {dst}")
+            out(f"    {label:>14} -> {codebook[sym]}")
+    out(f"  saved to            : {dst}")
 
 
 def action_compress():
@@ -396,7 +434,7 @@ def action_decompress():
     src = ask("Compressed file")
     dst = ask("Restored output file", "restored.out")
     n = decompress_file(src, dst)
-    print(f"\n  restored {n} bytes -> {dst}")
+    out(f"\n  restored {n} bytes -> {dst}")
 
 
 def action_roundtrip():
@@ -405,20 +443,20 @@ def action_roundtrip():
     with tempfile.TemporaryDirectory() as tmp:
         identical, info = roundtrip_file(src, p, tmp)
     print_compression_report(info, src, "(temporary file)", p)
-    print("\n  ROUND TRIP:", "PASS - restored file is identical" if identical
+    out("\n  ROUND TRIP:", "PASS - restored file is identical" if identical
           else "FAIL - restored file differs!")
 
 
 def action_sweep():
     src = ask("Input file")
     data = read_input_file(src)
-    print(f"\n  file: {src} ({len(data)} bytes)\n")
-    print(f"  {'p_min':>7} {'rare':>5} {'avg len':>8} {'file size':>10} {'ratio':>7}  round trip")
+    out(f"\n  file: {src} ({len(data)} bytes)\n")
+    out(f"  {'p_min':>7} {'rare':>5} {'avg len':>8} {'file size':>10} {'ratio':>7}  round trip")
     with tempfile.TemporaryDirectory() as tmp:
         for p in SWEEP_P_VALUES:
             identical, info = roundtrip_file(src, p, tmp)
             ratio = len(data) / info["file_size"] if info["file_size"] else 0
-            print(f"  {p:>7} {len(info['meta']['rare']):>5} "
+            out(f"  {p:>7} {len(info['meta']['rare']):>5} "
                   f"{info['stats']['average_code_length']:>8.3f} "
                   f"{info['file_size']:>10} {ratio:>7.3f}  {'OK' if identical else 'FAIL'}")
 
@@ -433,27 +471,36 @@ MENU = [
 
 
 def main():
-    if len(sys.argv) > 1 and sys.argv[1] == "test":
-        sys.exit(0 if run_all_tests() else 1)
-
+    start_log()
     try:
-        while True:
-            print("\n=== Modified Huffman ===")
-            for i, (label, _) in enumerate(MENU, 1):
-                print(f"  {i}. {label}")
-            print("  0. Exit")
-            choice = input("Choose: ").strip()
-            if choice == "0":
-                break
-            if not choice.isdigit() or not 1 <= int(choice) <= len(MENU):
-                print("Please choose a number from the menu.")
-                continue
-            try:
-                MENU[int(choice) - 1][1]()
-            except (OSError, ValueError, EOFError) as e:
-                print(f"\n  Error: {e}")
-    except (EOFError, KeyboardInterrupt):
-        print("\nBye.")
+        if len(sys.argv) > 1 and sys.argv[1] == "test":
+            ok = run_all_tests()
+            out(f"\nOutput saved to {os.path.abspath(LOG_PATH)}")
+            stop_log()
+            sys.exit(0 if ok else 1)
+
+        out(f"(Everything shown here is also saved to {os.path.abspath(LOG_PATH)})")
+        try:
+            while True:
+                out("\n=== Modified Huffman ===")
+                for i, (label, _) in enumerate(MENU, 1):
+                    out(f"  {i}. {label}")
+                out("  0. Exit")
+                choice = input("Choose: ").strip()
+                log_only(f"Choose: {choice}")
+                if choice == "0":
+                    break
+                if not choice.isdigit() or not 1 <= int(choice) <= len(MENU):
+                    out("Please choose a number from the menu.")
+                    continue
+                try:
+                    MENU[int(choice) - 1][1]()
+                except (OSError, ValueError, EOFError) as e:
+                    out(f"\n  Error: {e}")
+        except (EOFError, KeyboardInterrupt):
+            out("\nBye.")
+    finally:
+        stop_log()
 
 
 if __name__ == "__main__":
