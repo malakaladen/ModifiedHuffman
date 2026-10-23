@@ -1,0 +1,84 @@
+
+############################################################
+# Run started: 2026-10-23 12:58:49
+############################################################
+(Everything shown here is also saved to C:\Users\M\Desktop\Huffman\ModifiedHuffman\output_log.txt)
+
+=== Modified Huffman ===
+  1. Compress a file
+  2. Decompress a file
+  3. Analyze a file (probabilities, codebook, bit string, entropy)
+  4. Round-trip test on a file (compress + decompress + compare)
+  5. p_min experiment on a file (size vs p_min table)
+  6. Run ALL self-tests
+  0. Exit
+Choose: 1
+Input file: input.txt
+Compressed output file [compressed.bin]: malak
+p_min: 0.005
+
+############################################################
+# Run started: 2026-10-23 13:03:44
+############################################################
+(Everything shown here is also saved to C:\Users\M\Desktop\Huffman\ModifiedHuffman\output_log.txt)
+
+=== Modified Huffman ===
+  1. Compress a file
+  2. Decompress a file
+  3. Analyze a file (probabilities, codebook, bit string, entropy)
+  4. Round-trip test on a file (compress + decompress + compare)
+  5. p_min experiment on a file (size vs p_min table)
+  6. Run ALL self-tests
+  0. Exit
+Choose: 1
+Input file: input.txt
+Compressed output file [compressed.bin]: output.bin
+p_min: 0.05
+
+############################################################
+# Run started: 2026-10-23 13:07:28
+############################################################
+
+############################################################
+# Run started: 2026-10-23 13:08:26
+############################################################
+(Everything shown here is also saved to C:\Users\M\Desktop\Huffman\ModifiedHuffman\output_log.txt)
+
+=== Modified Huffman ===
+  1. Compress a file
+  2. Decompress a file
+  3. Analyze a file (probabilities, codebook, bit string, entropy)
+  4. Round-trip test on a file (compress + decompress + compare)
+  5. p_min experiment on a file (size vs p_min table)
+  6. Run ALL self-tests
+  0. Exit
+Choose: 1
+Input file: input.txt
+Compressed output file [compressed.bin]: malak.bin
+p_min: 0.04
+
+  p_min               : 0.04
+  original size       : 10 bytes
+  compressed file     : 35 bytes (header 33 + payload 2)
+  overall ratio       : 0.286
+  kept / rare symbols : 4 / 0
+  entropy             : 1.3568 bits/symbol
+  average code length : 1.5000 bits/symbol
+  payload bits        : 15
+  size check          : OK
+  codebook:
+               'a' -> 1
+               'b' -> 010
+               'c' -> 011
+               'd' -> 00
+  saved to            : malak.bin
+
+=== Modified Huffman ===
+  1. Compress a file
+  2. Decompress a file
+  3. Analyze a file (probabilities, codebook, bit string, entropy)
+  4. Round-trip test on a file (compress + decompress + compare)
+  5. p_min experiment on a file (size vs p_min table)
+  6. Run ALL self-tests
+  0. Exit
+Choose: 0

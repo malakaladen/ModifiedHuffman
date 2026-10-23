@@ -105,6 +105,8 @@ def compress_data(data, p_min):
         "original_length": len(data),
     }
 
+    return bit_string, metadata
+
 
 def calculate_statistics(data, metadata, bit_string):
     """Calculate entropy, average encodedlength and ratio."""

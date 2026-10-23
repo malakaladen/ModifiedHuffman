@@ -18,17 +18,19 @@ import tempfile
 import unittest
 from datetime import datetime
 
-from compression import (ESC , calculate_statistics, compress_data, read_input_file)
+from compression import (ESC, calculate_statistics, compress_data,
+                         read_input_file)
 from decompression import decompress_file
 from file_format import verify_file_size, write_compressed_file
 
 DEFAULT_P_MIN = 0.05
-TEST_P_VALUES = [0, 0.001, 0.01, 0.05, 0.2, 1.0]
 SWEEP_P_VALUES = [0, 0.001, 0.005, 0.01, 0.02, 0.05, 0.1, 0.2, 0.5, 1.0]
-MAX_BITS_SHOWN=200
+MAX_BITS_SHOWN = 200
 LOG_PATH = "output_log.txt"
+_log = None
 
 
+# ---------------------------------------------------------------- logging
 def out(*args, sep=" ", end="\n"):
     """Print to the screen AND append the same text to the log file."""
     text = sep.join(str(a) for a in args) + end
@@ -48,7 +50,8 @@ def log_only(text):
 def start_log():
     global _log
     _log = open(LOG_PATH, "a", encoding="utf-8")
-    _log.write(f"# Run started: {datetime.now():%Y-%m-%d %H:%M:%S}\n")
+    _log.write(f"\n{'#' * 60}\n# Run started: {datetime.now():%Y-%m-%d %H:%M:%S}\n{'#' * 60}\n")
+
 
 def stop_log():
     global _log
@@ -56,9 +59,8 @@ def stop_log():
         _log.close()
         _log = None
 
-# ======================================================================
-# Shared helpers for compress / decompress
-# ======================================================================
+
+# ---------------------------------------------------------------- core helpers
 def compress_to(src, dst, p_min):
     """Compress file `src` into `dst`. Returns a dict with all the numbers."""
     data = read_input_file(src)
@@ -66,7 +68,8 @@ def compress_to(src, dst, p_min):
     file_size = write_compressed_file(dst, bits, meta)
     ok, _, header_bytes, payload_bytes = verify_file_size(dst, len(bits))
     return {"data": data, "bits": bits, "meta": meta, "file_size": file_size,
-            "size_ok": ok, "header_bytes": header_bytes, "payload_bytes": payload_bytes,
+            "size_ok": ok, "header_bytes": header_bytes,
+            "payload_bytes": payload_bytes,
             "stats": calculate_statistics(data, meta, bits)}
 
 
@@ -80,35 +83,14 @@ def roundtrip_file(src, p_min, workdir):
         info["identical"] = f.read() == info["data"]
     return info["identical"], info
 
+
 def symbol_label(symbol):
     if symbol == ESC:
         return "ESC (rare)"
     return repr(chr(symbol)) if 32 <= symbol < 127 else f"byte {symbol}"
 
-def run_tests():
-    suite = unittest.defaultTestLoader.discover(os.path.dirname(os.path.abspath(__file__)),
-                                                pattern="test_huffman.py")
-    result = unittest.TextTestRunner(stream=sys.stdout, verbosity=1).run(suite)
-    return result.wasSuccessful()
 
-# ======================================================================
-# Menu actions
-# ======================================================================
-
-def ask_p_min():
-    while True:
-        text = input(f"Minimum symbol probability p_min (0..1) [{DEFAULT_P_MIN}]: ").strip()
-        log_only(f"p_min: {text or DEFAULT_P_MIN}")
-        try:
-            p = float(text) if text else DEFAULT_P_MIN
-        except ValueError:
-            out("Please enter a number, e.g. 0.05")
-            continue
-        if 0 <= p <= 1:
-            return p
-        out("p_min must be between 0 and 1.")
-
-
+# ---------------------------------------------------------------- reports
 def print_compression_report(info, dst, p_min):
     data, meta, stats = info["data"], info["meta"], info["stats"]
     out(f"\n  p_min               : {p_min}")
@@ -126,10 +108,10 @@ def print_compression_report(info, dst, p_min):
     if 0 < len(codebook) <= 40:
         out("  codebook:")
         for sym in sorted(codebook):
-            label = "ESC (others)" if sym == ESC else (
-                repr(chr(sym)) if 32 <= sym < 127 else f"byte {sym}")
-            out(f"    {label:>14} -> {codebook[sym]}")
-    out(f"  saved to            : {dst}")
+            out(f"    {symbol_label(sym):>14} -> {codebook[sym]}")
+    if dst:
+        out(f"  saved to            : {dst}")
+
 
 def print_analysis(data, p_min):
     """Probabilities, kept/rare split, codebook, bit string and statistics."""
@@ -155,14 +137,25 @@ def print_analysis(data, p_min):
     out(f"Payload ratio        : {ratio:.3f}" if ratio else "Payload ratio        : n/a")
 
 
-def action_compress(src,dst,p_min):
-    print_compression_report(compress_to(src,dst,p_min),dst,p_min)
+# ---------------------------------------------------------------- actions
+def run_tests():
+    suite = unittest.defaultTestLoader.discover(os.path.dirname(os.path.abspath(__file__)),
+                                                pattern="test_huffman.py")
+    result = unittest.TextTestRunner(stream=sys.stdout, verbosity=1).run(suite)
+    return result.wasSuccessful()
 
-def action_decompress(src,dst):
-    out(f"\n restored {decompress_file(src, dst)} bytes -> {dst}")
 
-def action_analyzer(src, p_min):
-    print_analysis(read_input_file(src),p_min)
+def action_compress(src, dst, p_min):
+    print_compression_report(compress_to(src, dst, p_min), dst, p_min)
+
+
+def action_decompress(src, dst):
+    out(f"\n  restored {decompress_file(src, dst)} bytes -> {dst}")
+
+
+def action_analyze(src, p_min):
+    print_analysis(read_input_file(src), p_min)
+
 
 def action_roundtrip(src, p_min):
     with tempfile.TemporaryDirectory() as tmp:
@@ -185,8 +178,10 @@ def action_sweep(src):
                 f"{info['stats']['average_code_length']:>8.3f} "
                 f"{info['file_size']:>10} {ratio:>7.3f}  {'OK' if identical else 'FAIL'}")
 
-def ask(prompt,default=None):
-    suffix=f"[{default}]" if default else ""
+
+# ---------------------------------------------------------------- interactive menu
+def ask(prompt, default=None):
+    suffix = f" [{default}]" if default else ""
     while True:
         text = input(f"{prompt}{suffix}: ").strip().strip('"')
         log_only(f"{prompt}{suffix}: {text}")
@@ -195,64 +190,82 @@ def ask(prompt,default=None):
         if default:
             return default
 
-        
+
+def ask_p_min():
+    while True:
+        text = input(f"Minimum symbol probability p_min (0..1) [{DEFAULT_P_MIN}]: ").strip()
+        log_only(f"p_min: {text or DEFAULT_P_MIN}")
+        try:
+            p = float(text) if text else DEFAULT_P_MIN
+        except ValueError:
+            out("Please enter a number, e.g. 0.05")
+            continue
+        if 0 <= p <= 1:
+            return p
+        out("p_min must be between 0 and 1.")
 
 
 MENU = [
     ("Compress a file",
-        lambda: action_compress(ask("Input file"), ask("Compressed output file", "compressed.bin"),                    ask_p_min())),
+     lambda: action_compress(ask("Input file"), ask("Compressed output file", "compressed.bin"),
+                             ask_p_min())),
     ("Decompress a file",
-        lambda: action_decompress(ask("Compressed file"), ask("Restored output file", "restored.out"))),
+     lambda: action_decompress(ask("Compressed file"), ask("Restored output file", "restored.out"))),
     ("Analyze a file (probabilities, codebook, bit string, entropy)",
-        lambda: action_analyzer(ask("Input file"), ask_p_min())),
+     lambda: action_analyze(ask("Input file"), ask_p_min())),
     ("Round-trip test on a file (compress + decompress + compare)",
-        lambda: action_roundtrip(ask("Input file"), ask_p_min())),
+     lambda: action_roundtrip(ask("Input file"), ask_p_min())),
     ("p_min experiment on a file (size vs p_min table)",
-        lambda: action_sweep(ask("Input file"))),
+     lambda: action_sweep(ask("Input file"))),
     ("Run ALL self-tests", run_tests),
 ]
+
 
 def interactive():
     out(f"(Everything shown here is also saved to {os.path.abspath(LOG_PATH)})")
     try:
         while True:
-            out("\n===Modified Huffman ===")
-            for i, (label, _) in enumerate(MENU,1):
-                out(f" {i}. {label}")
-            out("  0.Exit")
+            out("\n=== Modified Huffman ===")
+            for i, (label, _) in enumerate(MENU, 1):
+                out(f"  {i}. {label}")
+            out("  0. Exit")
             choice = input("Choose: ").strip()
             log_only(f"Choose: {choice}")
             if choice == "0":
                 return
             if not choice.isdigit() or not 1 <= int(choice) <= len(MENU):
-                out("plrase choose a number from the menu")
+                out("Please choose a number from the menu.")
                 continue
             try:
-                MENU[int(choice)-1][1]()
-            except (OSError,ValueError) as e:
-                out(f"\n Error: {e}")
+                MENU[int(choice) - 1][1]()
+            except (OSError, ValueError) as e:
+                out(f"\n  Error: {e}")
     except (EOFError, KeyboardInterrupt):
-        out("\nBye")                
+        out("\nBye.")
 
+
+# ---------------------------------------------------------------- command line
 def p_min_value(text):
     try:
         value = float(text)
     except ValueError:
         raise argparse.ArgumentTypeError(f"{text!r} is not a number") from None
-    if not 0 <= value <=1:
-        raise argparse.ArgumentTypeError("p_min must be between a and 1")
+    if not 0 <= value <= 1:
+        raise argparse.ArgumentTypeError("p_min must be between 0 and 1")
     return value
 
+
 def build_parser():
-    parser = argparse.ArgumentTypeError(descreption="Modified Huffman compression.")
+    parser = argparse.ArgumentParser(description="Modified Huffman compression.")
     sub = parser.add_subparsers(dest="command")
 
     def add(name, help_text, *positionals, p_min=False):
-        p= sub.add_parser(name, help=help_text)
+        p = sub.add_parser(name, help=help_text)
         for arg in positionals:
             p.add_argument(arg)
-            if p_min:
-                p.add_argument("--p-min", type=p_min_value, default = DEFAULT_P_MIN, help=f"rarity threshold in [0,1] (default {DEFAULT_P_MIN})")
+        if p_min:
+            p.add_argument("--p-min", type=p_min_value, default=DEFAULT_P_MIN,
+                           help=f"rarity threshold in [0, 1] (default {DEFAULT_P_MIN})")
 
     add("compress", "compress a file", "input", "output", p_min=True)
     add("decompress", "restore a compressed file", "input", "output")
@@ -261,7 +274,6 @@ def build_parser():
     add("sweep", "table of results for many p_min values", "input")
     add("test", "run all self-tests")
     return parser
-
 
 
 def main(argv=None):
@@ -277,7 +289,7 @@ def main(argv=None):
             elif args.command == "decompress":
                 action_decompress(args.input, args.output)
             elif args.command == "analyze":
-                action_analyzer(args.input, args.p_min)
+                action_analyze(args.input, args.p_min)
             elif args.command == "roundtrip":
                 return 0 if action_roundtrip(args.input, args.p_min) else 1
             elif args.command == "sweep":
