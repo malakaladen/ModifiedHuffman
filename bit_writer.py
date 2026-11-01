@@ -7,17 +7,16 @@ class BitWriter:
     def __init__(self):
         self.buffer = bytearray()
         self.current_byte = 0
-        self.bit_count = 0       # bits used in current_byte
-        self.total_bits = 0      # real bits written (padding excluded)
+        self.bit_count = 0  
 
     def write_bit(self, bit):
         '''Write a single bit (0/1 or "0"/"1").'''
         if bit not in (0, 1, "0", "1"):
             raise ValueError(f"bit must be 0 or 1, got {bit!r}")
 
+#الكرنت بايت دي بتبقى رقم ديسيمال عادي
         self.current_byte = (self.current_byte << 1) | int(bit)
         self.bit_count += 1
-        self.total_bits += 1
 
         if self.bit_count == 8:
             self.buffer.append(self.current_byte)
@@ -36,10 +35,12 @@ class BitWriter:
             index += 1
 
         #whole bytes are converted 8 bits at a time
+        #بشوف انا اقدر احول كام بت من الباقيين لبايتات كلمة من غير كسر و اخزنها
         whole = (len(bit_string)-index) // 8*8
+        #ببدأ من اول اخر بت اتكتب لجد اخر بت بيكون بايتس كاملة و 
         for start in range(index, index+whole,8):
-            self.buffer.append(int(bit_string[start:start+8], 2))
-        self.total_bits += whole
+            #ال int هنا بتحول النص لرقم عشان البتات داخلة نص و 2 دي بقول انه نظام ثنائي
+            self.buffer.append(int(bit_string[start:start+8], 2))  #هنا بحط الرقم اللي اتحول
         index += whole
 
         #Leftover (<8) bits stay in current_byte
@@ -72,27 +73,8 @@ class BitReader:
 
         self.payload = payload
         self.total_bits = len(payload) * 8 - padding_bits
-        self.position = 0
 
-    def bits_remaining(self):
-        return self.total_bits - self.position
 
-    def read_bit(self):
-        '''Return the next valid bit as 0 or 1.'''
-        if self.position >= self.total_bits:
-            raise EOFError("no more valid bits.")
-
-        byte = self.payload[self.position // 8]
-        bit = (byte >> (7 - self.position % 8)) & 1
-        self.position += 1
-        return bit
-
-    def read_bits(self, count):
-        '''Read count bits and return them as an integer.'''
-        value = 0
-        for _ in range(count):
-            value = (value << 1) | self.read_bit()
-        return value
 
     def bit_string(self):
         """All valid (non-padding) bits as a string of 0s and 1s."""

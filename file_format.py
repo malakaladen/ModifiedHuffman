@@ -108,18 +108,3 @@ def read_compressed_file(file_path):
     return header, BitReader(data[position:], padding_bits)
 
 
-def verify_file_size(file_path, expected_bits):
-    '''Check: file size == header size + packed payload size.
-    Returns (ok, file_size, header_bytes, payload_bytes).'''
-    with open(file_path, "rb") as f:
-        data = f.read()
-
-    _, _, _, padding_bits, has_esc, num_kept = FIXED_HEADER.unpack_from(data)
-    header_bytes = header_size(num_kept, has_esc)
-    payload_bytes = len(data) - header_bytes
-
-    expected_payload = (expected_bits + 7) // 8
-    ok = (payload_bytes == expected_payload
-          and padding_bits == payload_bytes * 8 - expected_bits)
-
-    return ok, len(data), header_bytes, payload_bytes
