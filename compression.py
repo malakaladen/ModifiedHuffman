@@ -108,37 +108,3 @@ def compress_data(data, p_min):
     return bit_string, metadata
 
 
-def calculate_statistics(data, metadata, bit_string):
-    """Calculate entropy, average encodedlength and ratio."""
-    total = len(data)
-    if total == 0:
-        return {
-            "entropy": 0.0,
-            "average_code_length": 0.0,
-            "encoded_bits":0,
-            "compression_ratio": None,
-        }
-
-    probabilities = metadata["probabilities"]
-    codebook = metadata["codebook"]
-    rare = metadata["rare"]
-
-    entropy = -sum( p* math.log2(p)  for p in probabilities.values() if p > 0)
-
-    esc_length = len(codebook[ESC]) if rare else 0
-    #Include the 8 raw bits used for every rare symbol.
-    average_length = sum(
-        probability * (esc_length + 8 
-                        if symbol in rare
-                        else len(codebook[symbol])
-                    )
-                    for symbol, probability in probabilities.items()
-                )
-    encoded_bits = len(bit_string)
-
-    return {
-        "entropy": entropy,
-        "average_code_length": average_length,
-        "encoded_bits": encoded_bits,
-        "compression_ratio":(total*8)/encoded_bits if encoded_bits else None,
-    }                  

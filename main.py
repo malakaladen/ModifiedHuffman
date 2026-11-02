@@ -6,7 +6,7 @@ Needs in the same folder: compression.py, file_format.py, bit_writer.py, decompr
 """
 import os
 
-from compression import ESC, read_input_file, compress_data, calculate_statistics
+from compression import ESC, read_input_file, compress_data
 from file_format import write_compressed_file
 from decompression import decompress_file
 
@@ -59,7 +59,6 @@ def action_compress():
     data = read_input_file(src)
     bits, meta = compress_data(data, p_min)
     file_size = write_compressed_file(dst, bits, meta)
-    stats = calculate_statistics(data, meta, bits)
 
     if not data:
         print("\n  WARNING: the input file is empty (0 bytes). Is it saved?")
@@ -69,9 +68,6 @@ def action_compress():
     if file_size:
         print(f"  overall ratio       : {len(data) / file_size:.3f}")
     print(f"  kept / rare symbols : {len(meta['kept'])} / {len(meta['rare'])}")
-    print(f"  entropy             : {stats['entropy']:.4f} bits/symbol")
-    print(f"  average code length : {stats['average_code_length']:.4f} bits/symbol")
-    print(f"  payload bits        : {stats['encoded_bits']}")
     codebook = meta["codebook"]
     if 0 < len(codebook) <= 40:
         print("  codebook:")
