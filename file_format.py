@@ -48,6 +48,7 @@ def write_compressed_file(file_path, bit_string, metadata):
     has_esc = ESC in huffman_frequencies
 
     with open(file_path, "wb") as f:
+    #pack بتاخد قيم الهيدر بالتلرتيب 
         f.write(FIXED_HEADER.pack(MAGIC, VERSION, metadata["original_length"],
                                 padding_bits, int(has_esc), len(kept_table)))
         for symbol in sorted(kept_table):
